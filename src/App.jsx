@@ -33,6 +33,7 @@ const db = getFirestore(app);
 const REQS_COLLECTION = 'requisitions';
 const QUOTES_COLLECTION = 'quotes';
 const USERS_COLLECTION = 'users';
+const MAIL_COLLECTION = 'mail'; // Collection watched by Firebase Extension
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -219,6 +220,9 @@ function MainApp({ user, userRole }) {
   const handleSubmitQuote = async (e, part) => {
     e.preventDefault();
     const formData = new FormData(e.target);
+    const quotePrice = parseFloat(formData.get('price'));
+    const quoteLeadTime = formData.get('leadTime');
+    const quoteNotes = formData.get('notes');
     
     const newQuote = {
       quoteNumber: `QT-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -227,16 +231,51 @@ function MainApp({ user, userRole }) {
       description: part.description,
       vendorName: user.email, // Using email as vendor name
       vendorId: user.uid,
-      price: parseFloat(formData.get('price')),
-      leadTime: formData.get('leadTime'),
-      notes: formData.get('notes'),
+      price: quotePrice,
+      leadTime: quoteLeadTime,
+      notes: quoteNotes,
       status: 'Submitted',
       submittedAt: new Date().toISOString()
     };
 
     try {
+      // 1. Save the Quote to the database
       await addDoc(collection(db, QUOTES_COLLECTION), newQuote);
-      setNotification({ type: 'success', message: `Quote ${newQuote.quoteNumber} submitted successfully!` });
+
+      // 2. EMAIL NOTIFICATION: Send to Buyer (Purchasing Dept)
+      // This writes to the 'mail' collection which triggers the Firebase Extension
+      await addDoc(collection(db, MAIL_COLLECTION), {
+        to: ['purchasing@your-company.com'], // Replace with actual buyer email or logic
+        message: {
+          subject: `New Quote: ${part.partNumber} from ${user.email}`,
+          html: `
+            <h2>New Quote Received</h2>
+            <p><strong>Vendor:</strong> ${user.email}</p>
+            <p><strong>Part:</strong> ${part.partNumber} - ${part.description}</p>
+            <p><strong>Price:</strong> $${quotePrice.toFixed(2)}</p>
+            <p><strong>Lead Time:</strong> ${quoteLeadTime}</p>
+            <p><strong>Notes:</strong> ${quoteNotes || 'None'}</p>
+            <br />
+            <a href="https://procure-flow.vercel.app">Log in to ProcureFlow to view</a>
+          `
+        }
+      });
+
+      // 3. EMAIL CONFIRMATION: Send to Vendor
+      await addDoc(collection(db, MAIL_COLLECTION), {
+        to: [user.email],
+        message: {
+          subject: `Quote Submitted: ${part.partNumber}`,
+          html: `
+            <h2>Quote Confirmation</h2>
+            <p>You successfully submitted a quote for <strong>${part.partNumber}</strong>.</p>
+            <p><strong>Price:</strong> $${quotePrice.toFixed(2)}</p>
+            <p>Thank you for your business.</p>
+          `
+        }
+      });
+
+      setNotification({ type: 'success', message: `Quote ${newQuote.quoteNumber} submitted and emails queued!` });
       setTimeout(() => setNotification(null), 4000);
       e.target.reset();
     } catch (err) {
